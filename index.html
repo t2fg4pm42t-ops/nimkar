@@ -905,6 +905,13 @@ svg.leaflet-image-layer.leaflet-interactive path {
   .leaflet-control-attribution { background: rgb(255 255 255 / 70%); }
 
 
+  /* v21: map pills + hex areas */
+  .pill { width: auto !important; height: auto !important; }
+  .pill span { display: inline-block; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 999px; font: 600 11.5px/1.3 var(--font); color: #171a1f; border: 1.5px solid #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 35%); white-space: nowrap; direction: ltr; unicode-bidi: isolate; cursor: pointer; }
+  .pill.dark span { color: #fff; }
+  .pill.approx span { border-style: dashed; border-color: #4a5058; opacity: .8; }
+  .pill.on span, .pill.hot span { outline: 2px solid var(--ink); outline-offset: 1px; z-index: 2; }
+  .legend .cm + .cm { margin-top: -2px; }
   /* v20: horizon changes, hedonic, forecast, comparison */
   .hzc { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
   .hzhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; }
@@ -1982,7 +1989,7 @@ const LOC = new Proxy({}, { get: (_, k) => { const hit = STREET_INDEX.find((e) =
 /* =====================================================================
    5. STATE  (mirrored to the URL hash)
    ===================================================================== */
-const DEFAULTS = { city: "ראשון לציון", by: "street", rooms: [], sqm: 0, sqmMax: 0, pmin: 0, pmax: 0, since: "", yFrom: CUR_YEAR - 2, yTo: CUR_YEAR, apt: true, full: true, age: "all", q: "", ask: "", key: null, sort: "n", dsort: "d", tab: "streets", proj: null, psort: "last", mom: "all", cmode: "ppm", hideOut: true, real: false, tcat: "rooms", tmetric: "ppm", tnorm: false, tper: "auto", pins: [], nat: "ppm", area: null, lang: "he", hz: 5, cpins: [], ntcat: "district", ntmetric: "ppm", ntfrom: 1998 };
+const DEFAULTS = { city: "ראשון לציון", by: "street", rooms: [], sqm: 0, sqmMax: 0, pmin: 0, pmax: 0, since: "", yFrom: CUR_YEAR - 2, yTo: CUR_YEAR, apt: true, full: true, age: "all", q: "", ask: "", key: null, sort: "n", dsort: "d", tab: "streets", proj: null, psort: "last", mom: "all", cmode: "ppm", hideOut: true, real: false, tcat: "rooms", tmetric: "ppm", tnorm: false, tper: "auto", pins: [], nat: "ppm", area: null, lang: "he", hz: 5, cpins: [], ntcat: "district", ntmetric: "ppm", ntfrom: 1998, mview: "auto" };
 const FILTER_KEYS = ["rooms", "sqm", "sqmMax", "pmin", "pmax", "since", "yFrom", "yTo", "apt", "full", "age", "mom", "hideOut", "real", "area"];
 const state = JSON.parse(JSON.stringify(DEFAULTS));
 let shown = CFG.pageSize, filtersOpen = false;
@@ -2105,30 +2112,82 @@ function initMap() {
     layer = L.layerGroup().addTo(map); parcelLayer = L.layerGroup().addTo(map);
     const lg = L.control({ position: "bottomleft" });
     lg.onAdd = () => { legendEl = L.DomUtil.create("div", "legend leaflet-control"); L.DomEvent.disableClickPropagation(legendEl); return legendEl; };
-    lg.addTo(map); initAreaCtl(); map.on("zoomend moveend", () => { if (!isNational()) drawStations(); });
+    lg.addTo(map); initAreaCtl(); map.on("zoomend moveend", () => { if (isNational()) return; drawStations(); if (state.tab === "streets" && state.mview === "auto") { const m = mapModeNow(); if (lastMode && m !== lastMode) drawCityMap(LAST.groups, LAST.breaks); lastMode = m; } });
   } catch (e) { const x = $("maperr"); x.textContent = "המפה לא נטענה: " + e.message; x.style.display = "block"; }
 }
 function highlight(key) {
-  markers.forEach((mk, k) => { const on = !!key && k === key; mk.setStyle({ weight: on ? 3 : 1.5, color: on ? getComputedStyle(document.body).color : mk.options.baseColor }); if (on) mk.bringToFront(); });
+  markers.forEach((mk, k) => { const on = !!key && k === key; if (mk.getElement && mk.options.icon) { const e = mk.getElement(); if (e) e.classList.toggle("hot", on); return; } mk.setStyle({ weight: on ? 3 : 1.5, color: on ? getComputedStyle(document.body).color : mk.options.baseColor }); if (on) mk.bringToFront(); });
   document.querySelectorAll(".row, .proj").forEach((r) => r.classList.toggle("hot", !!key && r.dataset.key === key));
 }
 function legendHtml(title, breaks, extra) {
   const rows = breaks.length ? RAMP.map((c, i) => { const t = i === 0 ? "עד " + ppmTxt(breaks[0]) : i === RAMP.length - 1 ? "מעל " + ppmTxt(breaks[breaks.length - 1]) : "<span class='ltr'>" + ppmTxt(breaks[i - 1]) + " – " + ppmTxt(breaks[i]) + "</span>"; return "<div><span class='sw' style='background:" + c + "'></span>" + t + "</div>"; }).join("") : "";
   return "<div class='head'><span>" + title + "</span><span>" + (legendClosed ? "הצג" : "הסתר") + "</span></div><div class='body'>" + rows + extra + "</div>";
 }
+/* ---- hex areas: a ~160 m hexagonal grid over the deals; colour = the active metric, opacity = how many deals ---- */
+const HEX = { R: 90, zoomSwitch: 15, cache: null };
+function hexGrid(deals, cmode) {
+  if (!deals.length) return [];
+  const lat0 = deals[0].lat, lng0 = deals[0].lng, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110540, R = cmode === "ppm" ? HEX.R : HEX.R * 2;   // trend modes need more deals per cell
+  const toXY = (d) => [(d.lng - lng0) * kx, (d.lat - lat0) * ky];
+  const axial = (x, y) => { const q = (Math.sqrt(3) / 3 * x - y / 3) / R, r = (2 / 3 * y) / R; let rx = Math.round(q), rz = Math.round(r), ry = Math.round(-q - r); const dx = Math.abs(rx - q), dy = Math.abs(ry - (-q - r)), dz = Math.abs(rz - r); if (dx > dy && dx > dz) rx = -ry - rz; else if (dy <= dz) rz = -rx - ry; return [rx, rz]; };
+  const cells = new Map();
+  const put = (d, pool) => { if (d.lat == null) return; const [x, y] = toXY(d); const [q, r] = axial(x, y); const k = q + "," + r; let c = cells.get(k); if (!c) { c = { q, r, deals: [], all: [] }; cells.set(k, c); } (pool ? c.all : c.deals).push(d); };
+  deals.forEach((d) => put(d, false)); if (cmode === "hz") HZ_ALL.forEach((d) => put(d, true));
+  const out = [];
+  cells.forEach((c) => {
+    if (c.deals.length < 3) return;
+    const cx = R * Math.sqrt(3) * (c.q + c.r / 2), cy = R * 1.5 * c.r;
+    const poly = []; for (let i = 0; i < 6; i++) { const a = Math.PI / 180 * (60 * i - 30); poly.push([lat0 + (cy + R * Math.sin(a)) / ky, lng0 + (cx + R * Math.cos(a)) / kx]); }
+    const ppms = c.deals.map((d) => d.ppm).filter(Boolean);
+    let v = null, label = "";
+    if (cmode === "mom") { const m = momentum(c.deals); v = m.cls ? m.pct : null; label = v == null ? "" : pctTxt(v) + "/שנה"; }
+    else if (cmode === "hz") { const h = hzChange(c.all, state.hz, true); v = h ? h.ann : null; label = h ? pctTxt(h.tot) + " · " + hzLabel(state.hz) : ""; }
+    else { v = ppms.length >= CFG.minForMedian ? median(ppms) : null; label = v ? ppmTxt(v) + " למ״ר" : ""; }
+    const streets = new Map(); c.deals.forEach((d) => { const k = d.s || ("גוש " + d.g); streets.set(k, (streets.get(k) || 0) + 1); });
+    out.push({ poly, n: c.deals.length, v, label, streets: [...streets].sort((a, b) => b[1] - a[1]).slice(0, 3), center: [lat0 + cy / ky, lng0 + cx / kx] });
+  });
+  return out;
+}
+const pillText = (g) => state.cmode === "mom" ? (g.mom && g.mom.cls ? pctTxt(g.mom.pct) : "·") : state.cmode === "hz" ? (g.hz ? pctTxt(g.hz.tot) : "·") : (g.medPpm ? (g.medPpm / 1000).toFixed(g.medPpm >= 10000 ? 0 : 1) + "k" : "·");
+function mapModeNow() { if (state.mview !== "auto") return state.mview; return map && map.getZoom() >= HEX.zoomSwitch ? "dots" : "hex"; }
+let hexLayer = null, lastMode = null;
 function drawCityMap(groups, breaks) {
   initMap(); if (!layer) return;
-  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear();
+  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear(); if (hexLayer) hexLayer.clearLayers(); else hexLayer = L.layerGroup().addTo(map);
   const ink = getComputedStyle(document.body).color;
+  const mode = mapModeNow(); lastMode = mode;
+  const colourOf = (v) => state.cmode === "mom" ? momColor(v) : state.cmode === "hz" ? hzColor(v) : (v ? colorFor(v, breaks) : "#b9bdc3");
+  if (mode === "hex") {
+    const sel = state.key && groups.get(state.key);
+    const pool = LAST.rows.filter((d) => d.lat != null && momPass(groups.get(d.key) || { mom: null }));
+    const maxN = Math.max(1, ...pool.length ? [50] : [1]);
+    hexGrid(pool, state.cmode).forEach((h) => {
+      const pg = L.polygon(h.poly, { color: "#ffffff", weight: 0.8, fillColor: colourOf(h.v), fillOpacity: h.v == null ? 0.18 : Math.min(0.9, 0.45 + 0.45 * Math.min(1, h.n / 30)), interactive: true });
+      pg.bindTooltip("<b>" + h.streets.map(([s, n]) => esc(s) + " (" + n + ")").join(" · ") + "</b><br>" + h.n + " עסקאות" + (h.label ? "<br>" + h.label : "<br><span class='muted'>פחות מ‑" + CFG.minForMedian + " עסקאות עם ₪/מ״ר</span>"), { direction: "top", sticky: true });
+      pg.on("click", () => { if (AREA.mode) return; update({ area: { type: "poly", pts: h.poly.map((p) => [+p[0].toFixed(5), +p[1].toFixed(5)]) }, key: null }); });
+      pg.addTo(hexLayer);
+    });
+    // the selected street still gets its marker so the list and map stay linked
+    if (sel && sel.lat != null) { const mk = L.circleMarker([sel.lat, sel.lng], { radius: 9, fillColor: colourOf(state.cmode === "mom" ? (sel.mom && sel.mom.cls ? sel.mom.pct : null) : state.cmode === "hz" ? (sel.hz ? sel.hz.ann : null) : sel.medPpm), fillOpacity: 0.95, color: ink, weight: 3 }); mk.bindTooltip("<b>" + esc(sel.key) + "</b>", { direction: "top" }); mk.addTo(layer); markers.set(sel.key, mk); }
+  }
   groups.forEach((g) => {
+    if (mode === "hex") return;
     if (g.lat == null || !momPass(g)) return;
     const on = state.key === g.key, approx = g.tier === "approx", base = approx ? "#6d7480" : "#ffffff";
     const fill = state.cmode === "mom" ? momColor(g.mom && g.mom.cls ? g.mom.pct : null) : state.cmode === "hz" ? hzColor(g.hz ? g.hz.ann : null) : (g.medPpm ? colorFor(g.medPpm, breaks) : "#b9bdc3");
-    const mk = L.circleMarker([g.lat, g.lng], { radius: Math.max(5, Math.min(24, 4 + 2.4 * Math.sqrt(g.n))), fillColor: fill, fillOpacity: approx ? 0.35 : g.medPpm ? 0.85 : 0.45, color: on ? ink : base, weight: on ? 3 : 1.5, dashArray: approx ? "3 3" : null, baseColor: base });
+    const dark = /^#(2b6ea3|c8402e|9c3131|5c1f36|c85c35|1f588a)/.test(fill) || (state.cmode === "ppm" && g.medPpm && breaks.length && g.medPpm > breaks[2]);
+    if (pillText(g) === "·") {   // nothing to label: a small quiet dot keeps the place without shouting
+      const dot = L.circleMarker([g.lat, g.lng], { radius: on ? 6 : 3.5, fillColor: "#b9bdc3", fillOpacity: 0.8, color: on ? ink : "#fff", weight: on ? 2 : 1, dashArray: approx ? "2 2" : null, baseColor: "#fff" });
+      dot.bindTooltip("<b>" + esc(g.key) + "</b>" + (approx ? " (מיקום משוער)" : "") + "<br>" + g.n + " עסקאות" + (g.medPrice ? " · חציון " + money(g.medPrice) : "") + "<br><span class='muted'>פחות מ‑" + CFG.minForMedian + " עסקאות עם ₪/מ״ר</span>", { direction: "top", sticky: true });
+      dot.on("mouseover", () => highlight(g.key)); dot.on("mouseout", () => highlight(null)); dot.on("click", () => { if (AREA.mode) return; selectKey(g.key); });
+      dot.addTo(layer); markers.set(g.key, dot); return;
+    }
+    const mk = L.marker([g.lat, g.lng], { icon: L.divIcon({ className: "pill" + (approx ? " approx" : "") + (on ? " on" : "") + (dark ? " dark" : ""), html: "<span style='background:" + fill + "'>" + esc(pillText(g)) + "</span>", iconSize: null }), keyboard: false, zIndexOffset: on ? 1000 : Math.round(g.n) });
+    mk.options.baseColor = base; mk.setStyle = () => {};
     mk.bindTooltip("<b>" + esc(g.key) + "</b>" + (approx ? " (מיקום משוער)" : "") + "<br>" + g.n + " עסקאות" + (g.medPrice ? " · חציון " + money(g.medPrice) : "") + (g.medPpm ? "<br>" + ppmTxt(g.medPpm) + " למ״ר" : "") + (g.mom && g.mom.cls ? "<br>" + momBadge(g.mom) : "") + (g.hz ? "<br>" + hzBadge(g.hz, state.hz) : "") + (g.fresh ? "<br>+" + g.fresh + " חדשות במאגר" : ""), { direction: "top", sticky: true });
     mk.on("mouseover", () => highlight(g.key)); mk.on("mouseout", () => highlight(null));
     mk.on("click", () => { if (AREA.mode) return; selectKey(g.key); });
-    mk.addTo(layer); markers.set(g.key, mk); if (on) mk.bringToFront();
+    mk.addTo(layer); markers.set(g.key, mk);
   });
   // selected group: show its parcels as small dots
   const sel = state.key && groups.get(state.key);
@@ -2146,21 +2205,25 @@ function drawCityMap(groups, breaks) {
   drawArea(); drawStations(); renderAreaCtl();
   if (legendEl) {
     legendEl.classList.toggle("closed", legendClosed);
-    const sw = "<div class='cm'><button data-c='ppm' class='" + (state.cmode === "ppm" ? "on" : "") + "'>₪/מ״ר</button><button data-c='mom' class='" + (state.cmode === "mom" ? "on" : "") + "'>מגמה</button><button data-c='hz' class='" + (state.cmode === "hz" ? "on" : "") + "'>שינוי</button></div>";
+    const sw = "<div class='cm'><button data-c='ppm' class='" + (state.cmode === "ppm" ? "on" : "") + "'>₪/מ״ר</button><button data-c='mom' class='" + (state.cmode === "mom" ? "on" : "") + "'>מגמה</button><button data-c='hz' class='" + (state.cmode === "hz" ? "on" : "") + "'>שינוי</button></div>" +
+      "<div class='cm'><button data-v='auto' class='" + (state.mview === "auto" ? "on" : "") + "'>אוטו</button><button data-v='hex' class='" + (state.mview === "hex" ? "on" : "") + "'>אזורים</button><button data-v='dots' class='" + (state.mview === "dots" ? "on" : "") + "'>רחובות</button></div>";
+    const how = mode === "hex" ? "<div class='muted' style='margin-top:4px'>משושים של ~" + (state.cmode === "ppm" ? 160 : 320) + " מ׳; עמום = מעט עסקאות · לחיצה על משושה מסננת אליו · התקרבו כדי לראות רחובות</div>" : "<div class='muted' style='margin-top:4px'>תווית = " + (state.cmode === "ppm" ? "אלפי ₪ למ״ר" : state.cmode === "mom" ? "שינוי שנתי" : "שינוי באופק") + " · מסגרת מקווקוות = מיקום משוער (מרכז הגוש) · בבחירה מוצגות גם החלקות</div>";
     if (state.cmode === "hz") {
       const lbl = ["ירידה (מתחת ל‑2%‎/שנה)", "ירידה קלה (−2% עד 0)", "עלייה מתונה (0–3%)", "עלייה (3–6%)", "עלייה חדה (מעל 6%‎/שנה)"];
       legendEl.innerHTML = "<div class='head'><span>שינוי ₪/מ״ר מותאם איכות · " + hzLabel(state.hz) + "</span><span>" + (legendClosed ? "הצג" : "הסתר") + "</span></div><div class='body'>" + sw + HZ_RAMP.map((c, i) => "<div><span class='sw' style='background:" + c + "'></span>" + lbl[i] + "</div>").join("") + "<div><span class='sw' style='background:#b9bdc3'></span>אין די עסקאות בשני החלונות</div><div class='muted' style='margin-top:4px'>קצב שנתי; 12 החודשים האחרונים מול 12 החודשים שהסתיימו לפני " + hzYears(state.hz) + " שנים</div></div>";
     } else if (state.cmode === "mom") {
       const lbl = ["ירידה חדה (מתחת ל‑8%‎/שנה)", "ירידה (3–8%)", "יציב (±3%)", "עלייה (3–8%)", "עלייה חדה (מעל 8%‎/שנה)"];
       legendEl.innerHTML = "<div class='head'><span>מגמת ₪/מ״ר ב‑24 חודשים</span><span>" + (legendClosed ? "הצג" : "הסתר") + "</span></div><div class='body'>" + sw + MOM_RAMP.map((c, i) => "<div><span class='sw' style='background:" + c + "'></span>" + lbl[i] + "</div>").join("") + "<div><span class='sw' style='background:#b9bdc3'></span>פחות מ‑" + MOM.minN + " עסקאות בחלון</div><div class='muted' style='margin-top:4px'>שיפוע לוג‑לינארי של ₪/מ״ר לפי תאריך; מאומת מול מכירות חוזרות כשיש</div></div>";
-    } else legendEl.innerHTML = legendHtml("חציון ₪/מ״ר " + ({ street: "ברחוב", nb: "בשכונה", gush: "בגוש" })[state.by], breaks, sw + "<div><span class='sw' style='background:#b9bdc3'></span>פחות מ‑" + CFG.minForMedian + " עסקאות</div><div><span class='sw approx'></span>מיקום משוער (מרכז הגוש)</div><div class='muted' style='margin-top:4px'>גודל העיגול = מספר עסקאות · בבחירה מוצגות גם החלקות</div>");
-    legendEl.querySelectorAll(".cm button").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); update({ cmode: b.dataset.c }); }; });
+    } else legendEl.innerHTML = legendHtml("חציון ₪/מ״ר " + ({ street: "ברחוב", nb: "בשכונה", gush: "בגוש" })[state.by], breaks, sw + "<div><span class='sw' style='background:#b9bdc3'></span>פחות מ‑" + CFG.minForMedian + " עסקאות</div>" + how);
+    if (state.cmode !== "ppm") legendEl.querySelector(".body").insertAdjacentHTML("beforeend", how);
+    legendEl.querySelectorAll(".cm button[data-c]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); update({ cmode: b.dataset.c }); }; });
+    legendEl.querySelectorAll(".cm button[data-v]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); update({ mview: b.dataset.v }); }; });
     legendEl.querySelector(".head").onclick = () => { legendClosed = !legendClosed; drawCityMap(groups, breaks); };
   }
 }
 function drawNationalMap(rows, breaks) {
   initMap(); if (!layer) return;
-  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear(); drawArea(); drawStations(); renderAreaCtl();
+  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear(); if (hexLayer) hexLayer.clearLayers(); drawArea(); drawStations(); renderAreaCtl();
   const ink = getComputedStyle(document.body).color;
   rows.forEach((s) => {
     if (!s.c) return;
@@ -2501,7 +2564,7 @@ function renderProjects(host, cityPpm) {
 }
 function drawProjectMap(breaks) {
   initMap(); if (!layer) return;
-  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear();
+  layer.clearLayers(); parcelLayer.clearLayers(); markers.clear(); if (hexLayer) hexLayer.clearLayers();
   const ink = getComputedStyle(document.body).color;
   drawArea(); drawStations(); renderAreaCtl();
   const vals = PROJECTS.map((pr) => pr.recentPpm || pr.medPpm).filter(Boolean).sort((a, b) => a - b);
@@ -3232,8 +3295,12 @@ function selectKey(key) {
 function setView(v) { document.body.className = v; if (v === "v-trends") state.tab = "trends"; else if (v === "v-list" && state.tab === "trends") state.tab = "streets"; render(); }
 function fitCity() {
   if (!map || !DEALS.length) return;
-  const pts = DEALS.filter((d) => d.lat != null).map((d) => [d.lat, d.lng]);
-  if (pts.length) map.fitBounds(L.latLngBounds(pts).pad(0.05), { maxZoom: 14 });
+  const pts = DEALS.filter((d) => d.lat != null);
+  if (!pts.length) return;
+  // robust bounds: a few mis-geocoded parcels must not zoom the whole city out
+  const lats = pts.map((d) => d.lat).sort((a, b) => a - b), lngs = pts.map((d) => d.lng).sort((a, b) => a - b);
+  const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)))];
+  map.fitBounds(L.latLngBounds([[q(lats, 0.02), q(lngs, 0.02)], [q(lats, 0.98), q(lngs, 0.98)]]).pad(0.06), { maxZoom: 15 });
 }
 async function openCity(name) {
   state.city = name; state.key = null; state.q = ""; state.ask = ""; state.pins = []; state.tab = "streets"; shown = CFG.pageSize;
@@ -3474,7 +3541,7 @@ Object.assign(EN, {
 "המודל ההדוני מסביר את לוג ₪/מ\"ר בעזרת שנה + מיקום (# רחובות/גושים) + גודל, חדרים, גיל וחדש-מקבלן, על # עסקאות. גמישות לגודל # (דירה כפולה בשטח ≈ −#% ל-₪/מ\"ר), חדר נוסף +#%, עשור גיל −#%, חדש מקבלן +#%.": "The hedonic model explains log ₪/m² with year + location (# streets/blocks) + size, rooms, age and new-build, over # deals. Size elasticity # (a flat twice the size ≈ −#% in ₪/m²), one more room +#%, a decade of age −#%, new build +#%.",
 "פער חציוני מול מדד המכירות החוזרות: # נק' לשנה (# שנים).": "Median gap to the repeat-sales index: # pts a year (# years).", "המודל ההדוני מסביר את לוג ₪/מ\"ר בעזרת שנה + מיקום (# רחובות/גושים) + גודל, חדרים, גיל וחדש-מקבלן, על # עסקאות.": "The hedonic model explains log ₪/m² with year + location (# streets/blocks) + size, rooms, age and new-build, over # deals.", "גמישות לגודל": "Size elasticity", "(דירה כפולה בשטח ≈": "(a flat twice the size ≈", "ל-₪/מ\"ר), חדר נוסף": "in ₪/m²), one more room", ", עשור גיל": ", a decade of age", ", חדש מקבלן": ", new build",
 "העלייה הגדולה ביותר ב-# שנים (מותאם איכות, # עסקאות בסינון):": "Largest rise over # years (quality-adjusted, # deals in filter):", "הירידה הגדולה ביותר ב-# שנים (מותאם איכות, # עסקאות בסינון):": "Largest fall over # years (quality-adjusted, # deals in filter):", "העלייה הגדולה ביותר ב-# שנה (מותאם איכות, # עסקאות בסינון):": "Largest rise over # year (quality-adjusted, # deals in filter):", "העלייה הגדולה ביותר ב-מאז # (מותאם איכות, # עסקאות בסינון):": "Largest rise since # (quality-adjusted, # deals in filter):", ". המפה צבועה לפי זה והרשימה מסודרת לפיו.": ". The map is coloured by this and the list sorted by it.", "(+#%/שנה); ": "(+#%/yr); ", "(−#%/שנה); ": "(−#%/yr); ", "(+#%/שנה). המפה צבועה לפי זה והרשימה מסודרת לפיו.": "(+#%/yr). The map is coloured by this and the list sorted by it.", "(−#%/שנה). המפה צבועה לפי זה והרשימה מסודרת לפיו.": "(−#%/yr). The map is coloured by this and the list sorted by it.",
-"שנה אחרונה": "last year", "מגמות ארציות": "National trends", "מגמות ארציות לפי מחוז": "National trends by district", "מחוז": "District", "גודל יישוב": "City size", "אשכול חברתי-כלכלי": "Socio-economic cluster", "הערים הגדולות": "Largest cities", "יישובים שסימנתי ★": "My starred cities ★", "יישובים שסימנתי ★ (#)": "My starred cities ★ (#)", "מאז": "Since", "# יישובים": "# cities", "ישראל · כל היישובים": "Israel · all cities", "# אלף+": "#k+", "#-# אלף": "#-#k", "עד # אלף": "up to #k", "אשכול #-#": "cluster #-#", "# (חלקי)": "# (partial)", "לשנה": "per year", "יישוב": "City",
+"שנה אחרונה": "last year", "אוטו": "Auto", "אזורים": "Areas", "משושים של ~# מ'; עמום = מעט עסקאות · לחיצה על משושה מסננת אליו · התקרבו כדי לראות רחובות": "~# m hexagons; faded = few deals · click a hexagon to filter to it · zoom in for streets", "תווית = אלפי ₪ למ\"ר · מסגרת מקווקוות = מיקום משוער (מרכז הגוש) · בבחירה מוצגות גם החלקות": "label = thousand ₪ per m² · dashed border = approx. location (block centre) · selecting shows parcels too", "תווית = שינוי שנתי · מסגרת מקווקוות = מיקום משוער (מרכז הגוש) · בבחירה מוצגות גם החלקות": "label = annual change · dashed border = approx. location (block centre) · selecting shows parcels too", "תווית = שינוי באופק · מסגרת מקווקוות = מיקום משוער (מרכז הגוש) · בבחירה מוצגות גם החלקות": "label = change over the horizon · dashed border = approx. location (block centre) · selecting shows parcels too", "פחות מ-# עסקאות עם ₪/מ\"ר": "fewer than # deals with ₪/m²", "מגמות ארציות": "National trends", "מגמות ארציות לפי מחוז": "National trends by district", "מחוז": "District", "גודל יישוב": "City size", "אשכול חברתי-כלכלי": "Socio-economic cluster", "הערים הגדולות": "Largest cities", "יישובים שסימנתי ★": "My starred cities ★", "יישובים שסימנתי ★ (#)": "My starred cities ★ (#)", "מאז": "Since", "# יישובים": "# cities", "ישראל · כל היישובים": "Israel · all cities", "# אלף+": "#k+", "#-# אלף": "#-#k", "עד # אלף": "up to #k", "אשכול #-#": "cluster #-#", "# (חלקי)": "# (partial)", "לשנה": "per year", "יישוב": "City",
 "חציון ₪/מ\"ר שנתי לכל יישוב (דירות, #+ עסקאות בשנה) מחושב ב-OVER; קבוצות = ממוצע משוקלל במספר העסקאות של חציוני היישובים. ★ ליד יישוב ברשימה מוסיף אותו לקו משלו.": "Yearly median ₪/m² per city (flats, #+ deals a year) computed at OVER; groups = deal-weighted average of the city medians. ★ next to a city in the list gives it a line of its own.", "השנה הנוכחית חלקית (נקודה מקווקוות). «מספר עסקאות» = סכום העסקאות ביישובי הקבוצה שעברו את סף # העסקאות בשנה. אין כאן התאמת איכות — ביישובים צעירים השינוי כולל גם מעבר לתמהיל חדש יותר.": "The current year is partial (dashed point). «Deal count» = deals in the group's cities that passed the #-deals-a-year threshold. No quality adjustment here — in young cities the change also reflects a shift to a newer mix.", "הסדרות השנתיות ליישובים טרם נטענו. לחצו «רענן» בכרטיס הארצי או המתינו לטעינה.": "The yearly city series have not loaded yet. Click «Refresh» on the national card or wait for the load.",
 "תל אביב": "Tel Aviv", "המרכז": "Central", "ירושלים": "Jerusalem", "חיפה": "Haifa", "הדרום": "South", "הצפון": "North", "אזור יהודה והשומרון": "Judea & Samaria", "איפה המחירים עלו הכי הרבה ב-# השנים האחרונות?": "Where did prices rise most in the last # years?", "# השנים האחרונות": "last # years"
 });
@@ -3576,7 +3643,7 @@ if (/^https?:$/.test(location.protocol) && "serviceWorker" in navigator) { navig
   // national data warms in the background so the ‹ כל הארץ › view is instant later
   if (state.city && !NATIONAL) loadNational(() => {}).then((n) => { NATIONAL = n; }).catch(() => {});
 })();
-window.__APP__ = { state, get DEALS() { return DEALS; }, render, LLM, llmLoad, askLLM, KV, OVER, openCity, openNational, loadCity, deltaCity, marketIndicators, TAX, get LAST() { return LAST; }, NB, rentFor, WATCH, get map() { return map; }, setLang, trText, translateNode, I18N, EN, get HED() { return HED; }, forecastCity, nationalRows, hzChange };
+window.__APP__ = { state, get DEALS() { return DEALS; }, render, LLM, llmLoad, askLLM, KV, OVER, openCity, openNational, loadCity, deltaCity, marketIndicators, TAX, get LAST() { return LAST; }, NB, rentFor, WATCH, get map() { return map; }, setLang, trText, translateNode, I18N, EN, get HED() { return HED; }, forecastCity, nationalRows, hzChange, get hexLayer() { return hexLayer; } };
 window.__NL__ = parseQuery;
 
 </script>
