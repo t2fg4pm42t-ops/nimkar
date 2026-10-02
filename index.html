@@ -2149,7 +2149,12 @@ function hexGrid(deals, cmode) {
   return out;
 }
 const pillText = (g) => state.cmode === "mom" ? (g.mom && g.mom.cls ? pctTxt(g.mom.pct) : "·") : state.cmode === "hz" ? (g.hz ? pctTxt(g.hz.tot) : "·") : (g.medPpm ? (g.medPpm / 1000).toFixed(g.medPpm >= 10000 ? 0 : 1) + "k" : "·");
-function mapModeNow() { if (state.mview !== "auto") return state.mview; return map && map.getZoom() >= HEX.zoomSwitch ? "dots" : "hex"; }
+function mapModeNow() {
+  if (state.mview !== "auto") return state.mview;
+  // sparse results (a text search, a selected street, a tight filter) are better as labelled points than as a few lonely hexagons
+  if (state.key || state.q.trim() || LAST.rows.length < 400 || LAST.groups.size < 25) return "dots";
+  return map && map.getZoom() >= HEX.zoomSwitch ? "dots" : "hex";
+}
 let hexLayer = null, lastMode = null;
 function drawCityMap(groups, breaks) {
   initMap(); if (!layer) return;
