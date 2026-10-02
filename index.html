@@ -935,7 +935,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   /* v19: area, export, tax, rent, profile */
   .areactl { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; gap: 2px; padding: 3px; direction: rtl; }
   .areactl button { border: 0; background: transparent; border-radius: 7px; padding: 5px 9px; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
-  .areactl button:hover { background: var(--accent-soft); } .areactl button.on { background: var(--accent); color: #fff; }
+  .areactl button:hover { background: var(--accent-soft); } .areactl button.on { background: var(--accent); color: #fff; } .areactl button.warn { background: #b4541f; color: #fff; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
   .expbtn { border: 1px solid var(--line); background: var(--surface-2); border-radius: 8px; height: 30px; min-width: 34px; padding: 0 8px; font-size: 13px; }
   .expbtn .lbl { font-size: 12.5px; } @media (max-width: 900px) { .expbtn .lbl { display: none; } }
   .expbtn:hover { border-color: var(--accent); }
@@ -1636,12 +1636,12 @@ function areaStop(cancel) {
   if (!map) return; map.getContainer().style.cursor = ""; map.doubleClickZoom.enable();
   if (AREA.tmp) { AREA.tmp.remove(); AREA.tmp = null; }
   const mode = AREA.mode; AREA.mode = null;
-  if (!cancel && mode === "poly" && AREA.pts.length >= 3) update({ area: { type: "poly", pts: AREA.pts.map((p) => [+p[0].toFixed(5), +p[1].toFixed(5)]) }, key: null });
+  if (!cancel && mode === "poly" && AREA.pts.length >= 3) update({ area: { type: "poly", pts: AREA.pts.map((p) => [+p[0].toFixed(5), +p[1].toFixed(5)]) }, key: null }); fitArea();
   AREA.pts = []; renderAreaCtl();
 }
 function areaClick(e) {
   if (!AREA.mode) return;
-  if (AREA.mode === "circle") { AREA.mode = null; map.getContainer().style.cursor = ""; map.doubleClickZoom.enable(); update({ area: { type: "circle", c: [+e.latlng.lat.toFixed(5), +e.latlng.lng.toFixed(5)], r: AREA.radius }, key: null }); renderAreaCtl(); return; }
+  if (AREA.mode === "circle") { AREA.mode = null; map.getContainer().style.cursor = ""; map.doubleClickZoom.enable(); update({ area: { type: "circle", c: [+e.latlng.lat.toFixed(5), +e.latlng.lng.toFixed(5)], r: AREA.radius }, key: null }); fitArea(); renderAreaCtl(); return; }
   AREA.pts.push([e.latlng.lat, e.latlng.lng]);
   if (AREA.tmp) AREA.tmp.remove();
   AREA.tmp = L.polyline(AREA.pts, { color: "#0f6b73", weight: 2, dashArray: "4 3" }).addTo(map);
@@ -1658,7 +1658,7 @@ function renderAreaCtl() {
   const b = (label, title, fn, on) => { const x = el("button", on ? "on" : "", label); x.title = title; x.onclick = (e) => { e.stopPropagation(); fn(); }; el2.appendChild(x); return x; };
   if (AREA.mode === "poly") { b("✓ סיום", "סיום הציור", () => areaStop(false), true); b("✕", "ביטול", () => areaStop(true)); return; }
   if (AREA.mode === "circle") { [300, 500, 1000].forEach((r) => b(r + " מ׳", "רדיוס", () => { AREA.radius = r; renderAreaCtl(); }, AREA.radius === r)); b("✕", "ביטול", () => areaStop(true)); return; }
-  if (state.area) { b("✕ " + areaLabel(), "הסרת האזור", () => update({ area: null })); return; }
+  if (state.area) { const x = b("מוצג רק " + areaLabel() + " · ✕ הצג את כל העיר", "הסרת האזור", () => { update({ area: null }); fitCity(); }, true); x.classList.add("warn"); return; }
   b("◎ רדיוס", "סינון לפי רדיוס סביב נקודה", () => areaStart("circle")); b("⬠ ציור אזור", "סינון לפי אזור שתציירו", () => areaStart("poly"));
 }
 function initAreaCtl() {
@@ -2152,9 +2152,10 @@ function hexGrid(deals, cmode) {
 const pillPpm = (g) => g.medPpm || (g.ppms && g.ppms.length >= 3 ? median(g.ppms) : null);
 const pillText = (g) => state.cmode === "mom" ? (g.mom && g.mom.cls ? pctTxt(g.mom.pct) : "·") : state.cmode === "hz" ? (g.hz ? pctTxt(g.hz.tot) : "·") : (pillPpm(g) ? (pillPpm(g) / 1000).toFixed(pillPpm(g) >= 10000 ? 0 : 1) + "k" : "·");
 function mapModeNow() {
-  if (state.mview !== "auto") return state.mview;
+  const sparse = state.key || state.q.trim() || LAST.rows.length < 400 || LAST.groups.size < 25;
+  if (state.mview !== "auto") return state.mview === "hex" && sparse ? "dots" : state.mview;
   // sparse results (a text search, a selected street, a tight filter) are better as labelled points than as a few lonely hexagons
-  if (state.key || state.q.trim() || LAST.rows.length < 400 || LAST.groups.size < 25) return "dots";
+  if (sparse) return "dots";
   return map && map.getZoom() >= HEX.zoomSwitch ? "dots" : "hex";
 }
 let hexLayer = null, lastMode = null;
@@ -3303,6 +3304,11 @@ function selectKey(key) {
   $("content").scrollTop = 0;
 }
 function setView(v) { document.body.className = v; if (v === "v-trends") state.tab = "trends"; else if (v === "v-list" && state.tab === "trends") state.tab = "streets"; render(); }
+function fitArea() {
+  const a = state.area; if (!map || !a) return;
+  const b = a.type === "circle" ? L.latLng(a.c).toBounds(a.r * 2.6) : L.latLngBounds(a.pts).pad(0.6);
+  map.fitBounds(b, { maxZoom: 16 });
+}
 function fitCity() {
   if (!map || !DEALS.length) return;
   const pts = DEALS.filter((d) => d.lat != null);
@@ -3312,7 +3318,8 @@ function fitCity() {
   const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor(arr.length * p)))];
   map.fitBounds(L.latLngBounds([[q(lats, 0.02), q(lngs, 0.02)], [q(lats, 0.98), q(lngs, 0.98)]]).pad(0.06), { maxZoom: 15 });
 }
-async function openCity(name) {
+async function openCity(name, keepArea) {
+  if (!keepArea && state.area) state.area = null;   // a drawn area belongs to the city it was drawn in
   state.city = name; state.key = null; state.q = ""; state.ask = ""; state.pins = []; state.tab = "streets"; shown = CFG.pageSize;
   render();
   setLoading("טוען את " + name + "…", 0.02);
@@ -3484,7 +3491,7 @@ const EN = {
 "מס שבח: רווח ריאלי = מחיר מכירה − מחיר רכישה מוצמד למדד − הוצאות. בדירת מגורים שאינה פטורה חל חישוב ליניארי מוטב: חלק הרווח שמיוחס לתקופה שלפני # פטור, והיתר חייב ב-#%. תקרת הפטור לדירה יחידה ≈ ₪#M. פחת, מס יסף, הקלות לדירה מזכה ועוד — אצל יועץ מס.": "Capital gains: real gain = sale price − CPI-indexed purchase price − costs. For a non-exempt home the linear benefit applies: the gain attributed to the period before # is exempt, the rest taxed at #%. Only-home exemption ceiling ≈ ₪#M. Depreciation, surtax, qualifying-home reliefs etc. — ask a tax adviser.",
 // export / area
 "⬇ עסקאות (CSV)": "⬇ Deals (CSV)", "⬇ רחובות (CSV)": "⬇ Streets (CSV)", "⬇ שכונות (CSV)": "⬇ Neighbourhoods (CSV)", "⬇ גושים (CSV)": "⬇ Blocks (CSV)", "🖨 הדפסה / PDF": "🖨 Print / PDF", "🔗 העתקת קישור לתצוגה": "🔗 Copy link to this view", "יוצא קובץ CSV · # עסקאות": "Exporting CSV · # deals", "יוצא קובץ CSV": "Exporting CSV", "אין עסקאות לייצוא": "No deals to export", "הקישור הועתק": "Link copied",
-"◎ רדיוס": "◎ Radius", "⬠ ציור אזור": "⬠ Draw area", "סינון לפי רדיוס סביב נקודה": "Filter by a radius around a point", "סינון לפי אזור שתציירו": "Filter by an area you draw", "✓ סיום": "✓ Done", "סיום הציור": "Finish drawing", "ביטול": "Cancel", "רדיוס": "Radius", "✕ רדיוס # מ'": "✕ Radius # m", "✕ אזור מצויר": "✕ Drawn area", "הסרת האזור": "Remove the area", "לחצו על המפה למרכז הרדיוס (# מ')": "Click the map for the radius centre (# m)", "לחצו נקודות על המפה; לחיצה כפולה או Enter מסיימים, Esc מבטל": "Click points on the map; double-click or Enter finishes, Esc cancels",
+"◎ רדיוס": "◎ Radius", "⬠ ציור אזור": "⬠ Draw area", "סינון לפי רדיוס סביב נקודה": "Filter by a radius around a point", "סינון לפי אזור שתציירו": "Filter by an area you draw", "✓ סיום": "✓ Done", "סיום הציור": "Finish drawing", "ביטול": "Cancel", "רדיוס": "Radius", "✕ רדיוס # מ'": "✕ Radius # m", "✕ אזור מצויר": "✕ Drawn area", "מוצג רק רדיוס # מ'": "Showing only a # m radius", "מוצג רק אזור מצויר": "Showing only the drawn area", "✕ הצג את כל העיר": "✕ Show the whole city", "רדיוס # מ'": "Radius # m", "אזור מצויר": "Drawn area", "הסרת האזור": "Remove the area", "לחצו על המפה למרכז הרדיוס (# מ')": "Click the map for the radius centre (# m)", "לחצו נקודות על המפה; לחיצה כפולה או Enter מסיימים, Esc מבטל": "Click points on the map; double-click or Enter finishes, Esc cancels",
 // watch
 "המעקב שלי": "My watchlist", "+# חדשות": "+# new", "אין עסקאות חדשות מאז הביקור הקודם": "No new deals since your last visit", "רחוב / קבוצה": "street / group", "פרויקט": "project", "חיפוש שמור": "saved search", "פתח": "Open", "סמן כנקרא": "Mark as seen", "הסר מהמעקב": "Remove from watchlist", "🔕 הפעל התראות": "🔕 Enable alerts", "קבלו התראת דפדפן כשנוספות עסקאות לפריטים במעקב": "Get a browser alert when deals are added to watched items", "התראות דפדפן פעילות": "Browser alerts are on", "כבר במעקב": "Already watched", "נוסף למעקב: #": "Watching: #", "כל העסקאות": "all deals", "# פריטים ב-# יישובים": "# items in # cities", "פתחו יישוב כדי לבדוק חדשות": "open a city to check for news",
 // projects
@@ -3648,7 +3655,7 @@ if (/^https?:$/.test(location.protocol) && "serviceWorker" in navigator) { navig
   cpiRefresh().then((n) => { if (n && state.real) { applyPriceMode(); render(); } });
   try { if (state.lang !== "en" && localStorage.getItem("nimkar:lang") === "en" && !location.hash) state.lang = "en"; } catch (e) { /* ignore */ }
   if (state.lang === "en") setLang("en");
-  if (state.city) { const c = state.city; state.city = ""; await openCity(c); if (state.key && map) { const mk = markers.get(state.key); if (mk) map.setView(mk.getLatLng(), 15); } }
+  if (state.city) { const c = state.city; state.city = ""; await openCity(c, true); if (state.area) fitArea(); if (state.key && map) { const mk = markers.get(state.key); if (mk) map.setView(mk.getLatLng(), 15); } }
   else { render(); startNational(); }
   // national data warms in the background so the ‹ כל הארץ › view is instant later
   if (state.city && !NATIONAL) loadNational(() => {}).then((n) => { NATIONAL = n; }).catch(() => {});
